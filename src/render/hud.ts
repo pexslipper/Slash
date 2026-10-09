@@ -3,7 +3,7 @@ import { view } from '../core/view.ts'
 import { comboMult } from '../game/combo.ts'
 import { MOVE_ORDER, SPECIALS } from '../game/specials.ts'
 import type { World } from '../game/world.ts'
-import { FONT_BRUSH, GOLD, INK, INK_SOFT, PAPER, RED, hanko, mon, text } from './ink.ts'
+import { FONT_BRUSH, FONT_TEXT, GOLD, INK, INK_SOFT, PAPER, RED, hanko, mon, text } from './ink.ts'
 
 type Ctx = CanvasRenderingContext2D
 
@@ -48,10 +48,33 @@ function fitLines(str: string, width: number): string[] {
   return width < 1000 ? str.split('·').map((part) => part.trim()) : [str]
 }
 
+/** Word-wraps text to a maximum width at the given (body-font) size. */
+function wrap(g: Ctx, str: string, size: number, maxW: number): string[] {
+  g.save()
+  g.font = `700 ${size}px ${FONT_TEXT}`
+  const width = (t: string): number => (g.measureText(t) as TextMetrics | undefined)?.width ?? t.length * size * 0.5
+  const out: string[] = []
+  let line = ''
+  for (const word of str.split(' ')) {
+    const next = line ? `${line} ${word}` : word
+    if (line && width(next) > maxW) {
+      out.push(line)
+      line = word
+    } else {
+      line = next
+    }
+  }
+  if (line) out.push(line)
+  g.restore()
+  return out
+}
+
 export function renderHud(g: Ctx, w: World): void {
   const { w: vw, h: vh } = view
   const p = w.player
   const s = w.stats
+  // Phones in portrait (and other narrow views): stack the top HUD instead of spreading it out.
+  const narrow = vw < 640
 
   text(g, '命', 24, 26, 22, RED, { font: FONT_BRUSH })
   meter(g, 46, 27, 210, p.hp / s.maxHp, RED)
@@ -77,28 +100,33 @@ export function renderHud(g: Ctx, w: World): void {
   mon(g, vw - 176, 30, 10)
   text(g, String(w.bankGold + w.runGold), vw - 158, 31, 22, INK, { align: 'left', font: FONT_BRUSH })
 
-  text(g, `${w.def.kanji}  ${w.def.name}`, vw / 2, 28, 18, INK, { font: FONT_BRUSH, alpha: 0.75 })
+  // Level name and foes left: centered on wide screens, under the coins (clear of the pause button) on narrow ones.
+  const titleX = narrow ? vw - 20 : vw / 2
+  const titleAlign = narrow ? 'right' : 'center'
+  text(g, `${w.def.kanji}  ${w.def.name}`, titleX, narrow ? 72 : 28, 18, INK, { font: FONT_BRUSH, alpha: 0.75, align: titleAlign })
   if (!w.def.boss) {
     // The gate stays sealed until every foe has fallen.
     const left = w.foesLeft
-    text(g, left > 0 ? `残  ${left} foes` : '開  gate open', vw / 2, 50, 15, left > 0 ? RED : INK, { font: FONT_BRUSH, alpha: 0.85 })
+    text(g, left > 0 ? `残  ${left} foes` : '開  gate open', titleX, narrow ? 94 : 50, 15, left > 0 ? RED : INK, { font: FONT_BRUSH, alpha: 0.85, align: titleAlign })
   }
 
   const boss = w.boss
   if (boss && boss.alive) {
     const bw = Math.min(520, vw - 120)
     const bx = (vw - bw) / 2
-    const by = vh - 54
+    const label = wrap(g, boss.bossLabel(), 14, vw - 40)
+    const by = vh - 40 - label.length * 18
     paperBand(g, by - 52, vh - by + 52, vw)
     text(g, boss.bossName, vw / 2, by - 20, 18, INK, { font: FONT_BRUSH })
     meter(g, bx, by, bw, boss.hp / boss.maxHp, RED)
-    text(g, boss.bossLabel(), vw / 2, by + 22, 14, boss.bossAlert() ? RED : INK_SOFT)
+    label.forEach((l, i) => text(g, l, vw / 2, by + 22 + i * 18, 14, boss.bossAlert() ? RED : INK_SOFT))
   }
 
   if (w.comboShow > 0 && w.combo > 0) {
     const a = Math.min(1, w.comboShow * 2)
-    text(g, `${w.combo}`, vw / 2 - 8, 74, 40, RED, { font: FONT_BRUSH, align: 'right', alpha: a })
-    text(g, `斬  ×${comboMult(w.combo)}`, vw / 2, 76, 20, INK, { font: FONT_BRUSH, align: 'left', alpha: a })
+    const cy = narrow ? 165 : 74
+    text(g, `${w.combo}`, vw / 2 - 8, cy, 40, RED, { font: FONT_BRUSH, align: 'right', alpha: a })
+    text(g, `斬  ×${comboMult(w.combo)}`, vw / 2, cy + 2, 20, INK, { font: FONT_BRUSH, align: 'left', alpha: a })
   }
 
   if (w.banner) {
@@ -132,7 +160,7 @@ export function renderHud(g: Ctx, w: World): void {
     })
   }
   if (hints.length > 0 && !(boss && boss.alive)) {
-    const lines = hints.flatMap((h) => fitLines(h.str, vw).map((str) => ({ str, color: h.color })))
+    const lines = hints.flatMap((h) => fitLines(h.str, vw).flatMap((part) => wrap(g, part, 15, vw - 32)).map((str) => ({ str, color: h.color })))
     const lh = 21
     const top = vh - 18 - lines.length * lh
     paperBand(g, top - 24, vh - top + 24, vw)
