@@ -178,6 +178,13 @@ export function drawTerrain(g: Ctx, level: Level, x0: number, y0: number, x1: nu
       }
     }
   }
+  // When the view reaches below the map (tall phone screens), solid ground carries on down;
+  // pits stay open.
+  if (y1 > level.height) {
+    for (let cx = c0; cx <= c1; cx++) {
+      if (level.tile(cx, level.rows - 1) === SOLID) g.fillRect(cx * TILE - 0.5, level.height - 0.5, TILE + 1, y1 - level.height + 1)
+    }
+  }
   g.restore()
 }
 

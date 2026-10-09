@@ -85,6 +85,10 @@ const STILL_DELAY = 0.35
 const PAN_EDGE = 0.16
 /** Pan speed (world units per real second) with the cursor right at the edge. */
 const PAN_SPEED = 1100
+/** Every map's main ground is its bottom 3 rows. */
+const GROUND_ROWS = 3
+/** On screens taller than the level, the ground surface sits this far down the screen. */
+const TALL_GROUND_AT = 0.58
 
 export class World implements WorldCtx, SpecialCtx, InputHandler {
   readonly level: Level
@@ -951,7 +955,15 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
   private clampCamera(): void {
     const L = this.level
     this.cam.x = L.width <= view.w ? (L.width - view.w) / 2 : clamp(this.cam.x, 0, L.width - view.w)
-    this.cam.y = L.height <= view.h ? L.height - view.h : clamp(this.cam.y, 0, L.height - view.h)
+    if (L.height <= view.h) {
+      // Taller screen than the level (a phone held upright): put the main ground just below
+      // the middle of the screen, where drawing is comfortable, without hiding the level's top.
+      // The ground is drawn continuing below the level.
+      const desired = L.height - GROUND_ROWS * TILE - view.h * TALL_GROUND_AT
+      this.cam.y = clamp(desired, L.height - view.h, 0)
+    } else {
+      this.cam.y = clamp(this.cam.y, 0, L.height - view.h)
+    }
   }
 
   // ---- Rendering ----

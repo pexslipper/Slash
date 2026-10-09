@@ -31,6 +31,23 @@ function meter(g: Ctx, x: number, y: number, w: number, frac: number, color: str
   g.restore()
 }
 
+/** Soft paper backing so text stays readable over the black ink ground. */
+function paperBand(g: Ctx, y: number, h: number, width: number): void {
+  const grad = g.createLinearGradient(0, y, 0, y + h)
+  grad.addColorStop(0, 'rgba(239, 229, 207, 0)')
+  grad.addColorStop(0.35, 'rgba(239, 229, 207, 0.85)')
+  grad.addColorStop(1, 'rgba(239, 229, 207, 0.92)')
+  g.save()
+  g.fillStyle = grad
+  g.fillRect(0, y, width, h)
+  g.restore()
+}
+
+/** Long hint lines are split at their "·" separators on narrow (portrait) screens. */
+function fitLines(str: string, width: number): string[] {
+  return width < 1000 ? str.split('·').map((part) => part.trim()) : [str]
+}
+
 export function renderHud(g: Ctx, w: World): void {
   const { w: vw, h: vh } = view
   const p = w.player
@@ -72,6 +89,7 @@ export function renderHud(g: Ctx, w: World): void {
     const bw = Math.min(520, vw - 120)
     const bx = (vw - bw) / 2
     const by = vh - 54
+    paperBand(g, by - 52, vh - by + 52, vw)
     text(g, boss.bossName, vw / 2, by - 20, 18, INK, { font: FONT_BRUSH })
     meter(g, bx, by, bw, boss.hp / boss.maxHp, RED)
     text(g, boss.bossLabel(), vw / 2, by + 22, 14, boss.bossAlert() ? RED : INK_SOFT)
@@ -97,16 +115,27 @@ export function renderHud(g: Ctx, w: World): void {
     if (w.banner.sub) text(g, w.banner.sub, vw / 2, cy + 48, 20, RED, { font: FONT_BRUSH, alpha: a })
   }
 
-  if (w.stage <= 2 && w.specialsCast === 0 && !w.outcome && !w.banner && w.kills >= 3) {
-    const learned = MOVE_ORDER.some((k) => s.arts[k])
-    const hint = learned
-      ? 'Draw a learned shape to cast its special: triangle/rectangle 昇, circle 円, zigzag 静, star 星.'
-      : 'Shape specials are locked. Learn them with mon at the Dojo between stages (技 Arts).'
-    text(g, hint, vw / 2, vh - 28, 15, RED, { alpha: 0.85 })
-  }
-
+  // Bottom hints (not during duels, where the boss bar uses this space).
+  const hints: { str: string; color: string }[] = []
   if (w.stage === 1 && w.kills < 3 && !w.outcome && !w.banner) {
-    text(g, 'Click to run or jump  ·  Drag to draw a cut (time slows)  ·  Release to flash-step to its start and strike', vw / 2, vh - 46, 15, INK, { alpha: 0.75 })
-    text(g, 'Hit the red seal for a critical  ·  Click mid-cut for a circular finisher', vw / 2, vh - 24, 13, INK_SOFT)
+    hints.push(
+      { str: 'Click to run or jump  ·  Drag to draw a cut (time slows)  ·  Release to flash-step to its start and strike', color: INK },
+      { str: 'Hit the red seal for a critical  ·  Click mid-cut for a circular finisher', color: INK_SOFT },
+    )
+  } else if (w.stage <= 2 && w.specialsCast === 0 && !w.outcome && !w.banner && w.kills >= 3) {
+    const learned = MOVE_ORDER.some((k) => s.arts[k])
+    hints.push({
+      str: learned
+        ? 'Draw a learned shape to cast its special  ·  triangle/rectangle 昇, circle 円, zigzag 静, star 星'
+        : 'Shape specials are locked  ·  Learn them with mon at the Dojo between stages (技 Arts)',
+      color: RED,
+    })
+  }
+  if (hints.length > 0 && !(boss && boss.alive)) {
+    const lines = hints.flatMap((h) => fitLines(h.str, vw).map((str) => ({ str, color: h.color })))
+    const lh = 21
+    const top = vh - 18 - lines.length * lh
+    paperBand(g, top - 24, vh - top + 24, vw)
+    lines.forEach((l, i) => text(g, l.str, vw / 2, top + lh / 2 + i * lh, 15, l.color, { alpha: 0.9 }))
   }
 }
