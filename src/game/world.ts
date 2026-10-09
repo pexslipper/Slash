@@ -87,8 +87,11 @@ const PAN_EDGE = 0.16
 const PAN_SPEED = 1100
 /** Every map's main ground is its bottom 3 rows. */
 const GROUND_ROWS = 3
-/** On screens taller than the level, the ground surface sits this far down the screen. */
-const TALL_GROUND_AT = 0.58
+/**
+ * On screens taller than the level, the ground surface sits this far down the screen: low enough
+ * to be under the thumb when a phone is held upright in one hand.
+ */
+const TALL_GROUND_AT = 0.68
 
 export class World implements WorldCtx, SpecialCtx, InputHandler {
   readonly level: Level
