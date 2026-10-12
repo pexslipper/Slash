@@ -92,6 +92,16 @@ const GROUND_ROWS = 3
  * to be under the thumb when a phone is held upright in one hand.
  */
 const TALL_GROUND_AT = 0.68
+/**
+ * After a special leaves enemies in the air, the camera frames them together with the samurai,
+ * zooming out (never past this) when they don't fit, so the follow-up cut can be drawn on them.
+ */
+const MIN_ZOOM = 0.65
+/** Screen-space margins kept around the framed group; the top one clears the HUD meters. */
+const FRAME_PAD = 60
+const FRAME_TOP = 130
+/** Longest the camera keeps framing one special's victims (real seconds). */
+const FRAME_TIME = 4
 
 export class World implements WorldCtx, SpecialCtx, InputHandler {
   readonly level: Level
@@ -114,6 +124,8 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
   banner: Banner | null = null
   outcome: 'clear' | 'dead' | null = null
   cam = vec()
+  /** Camera zoom: 1 normally, below 1 while zoomed out to frame a special's victims. */
+  zoom = 1
   /** Spirit (0..100): earned by landing hits, spent on shape specials. */
   spirit: number
   /** Shape the current drawing would cast, refreshed while drawing. */
@@ -146,6 +158,9 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
   private endTimer = 0
   private ended = false
   private clickMark: { p: Vec; life: number } | null = null
+  /** Enemies a special left in the air, kept in frame until they land (or FRAME_TIME runs out). */
+  private framed: Enemy[] = []
+  private frameT = 0
   private readonly onEnd: (r: StageResult) => void
 
   constructor(
@@ -173,6 +188,15 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     clock.hitstop = 0
     this.updateCamera(1, true)
     this.showBanner(this.def.kanji, `${this.def.name}${info.cycle > 0 ? `  ·  Trial ${info.cycle + 1}` : ''}`, 2.2)
+  }
+
+  /** Visible world width and height in units at the current zoom. */
+  get viewW(): number {
+    return view.w / this.zoom
+  }
+
+  get viewH(): number {
+    return view.h / this.zoom
   }
 
   get boss(): Enemy | undefined {
@@ -244,7 +268,7 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
   // ---- Input (screen coordinates) ----
 
   private toWorld(s: Vec): Vec {
-    return add(s, this.cam)
+    return add(mul(s, 1 / this.zoom), this.cam)
   }
 
   pointerDown(s: Vec): void {
@@ -580,7 +604,11 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
       this.fx.text(add(p.pos, vec(0, -60)), `+${Math.round(heal)}`, RED, 22)
     }
     if (cut && this.pendingSpecial && !p.dead) {
-      this.specials.cast(this, this.pendingSpecial, comboMult(this.combo))
+      const lifted = this.specials.cast(this, this.pendingSpecial, comboMult(this.combo))
+      if (lifted.length > 0) {
+        this.framed = lifted
+        this.frameT = FRAME_TIME
+      }
       this.specialsCast++
     }
     if (this.stilled.size > 0) this.stillRelease = STILL_DELAY
@@ -701,13 +729,13 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     p.tick(dt)
     this.checkHazards()
 
-    const cx = this.cam.x + view.w / 2
+    const cx = this.cam.x + this.viewW / 2
     this.specials.update(dt, this)
     if (this.stillRelease >= 0 && p.action !== 'slash' && p.action !== 'approach') {
       this.stillRelease -= dt
       if (this.stillRelease < 0) this.releaseStill()
     }
-    for (const e of this.enemies) if (e.isBoss || Math.abs(e.pos.x - cx) < view.w) e.update(dt, this)
+    for (const e of this.enemies) if (e.isBoss || Math.abs(e.pos.x - cx) < this.viewW) e.update(dt, this)
     this.checkContacts()
     this.updateProjectiles(dt)
     this.updateCoins(dt)
@@ -914,21 +942,56 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
 
   private spawnPetals(dt: number): void {
     if (!this.def.theme.petals || this.fx.petalCount > 40) return
-    if (Math.random() < dt * 6) this.fx.petal(this.cam.x + view.w * rand(0.2, 1.15), this.cam.y - 10 + rand(0, view.h * 0.3))
+    if (Math.random() < dt * 6) this.fx.petal(this.cam.x + this.viewW * rand(0.2, 1.15), this.cam.y - 10 + rand(0, this.viewH * 0.3))
   }
 
   private updateCamera(realDt: number, snap = false): void {
     const p = this.player
+    if ((this.frameT -= realDt) <= 0) this.framed = []
+    this.framed = this.framed.filter((e) => e.alive && e.airborne)
+    // While drawing, zoom and view hold still (bar edge panning) so the path stays under the finger.
     if (p.action === 'drawing' && !snap) {
       this.panWhileDrawing(realDt)
       return
     }
-    const tx = p.pos.x - view.w / 2 + p.facing * 80
-    const ty = p.pos.y - view.h * 0.55
     const k = snap ? 1 : 1 - Math.exp(-realDt * 5)
-    this.cam.x = lerp(this.cam.x, tx, k)
-    this.cam.y = lerp(this.cam.y, ty, k)
+    const frame = this.frameTarget()
+    this.zoom = lerp(this.zoom, frame?.zoom ?? 1, k)
+    // `ax`/`ay` is where on screen the focus point should sit.
+    const focus = frame ?? { x: p.pos.x + p.facing * 80, y: p.pos.y, ax: view.w / 2, ay: view.h * 0.55 }
+    this.cam.x = lerp(this.cam.x, focus.x - focus.ax / this.zoom, k)
+    this.cam.y = lerp(this.cam.y, focus.y - focus.ay / this.zoom, k)
     this.clampCamera()
+  }
+
+  /** Centre and zoom that fit the samurai and the framed enemies inside the screen margins. */
+  private frameTarget(): { x: number; y: number; ax: number; ay: number; zoom: number } | null {
+    if (this.framed.length === 0) return null
+    const p = this.player
+    let x0 = p.pos.x - p.hw
+    let x1 = p.pos.x + p.hw
+    let y0 = p.pos.y - p.hh
+    let y1 = p.pos.y + p.hh
+    for (const e of this.framed) {
+      x0 = Math.min(x0, e.pos.x - e.hw)
+      x1 = Math.max(x1, e.pos.x + e.hw)
+      y0 = Math.min(y0, e.pos.y - e.hh)
+      y1 = Math.max(y1, e.pos.y + e.hh)
+    }
+    const fitW = (view.w - FRAME_PAD * 2) / (x1 - x0)
+    // On screens taller than the level the whole height is always in view (see clampCamera).
+    const fitH = this.level.height <= view.h ? 1 : (view.h - FRAME_TOP - FRAME_PAD) / (y1 - y0)
+    const zoom = clamp(Math.min(fitW, fitH), MIN_ZOOM, 1)
+    // Too spread out to fit even at the widest zoom: favour keeping the samurai in view.
+    const rx = Math.max(0, (view.w / 2 - FRAME_PAD) / zoom - p.hw)
+    const ry = Math.max(0, ((view.h - FRAME_TOP - FRAME_PAD) / 2) / zoom - p.hh)
+    return {
+      x: clamp((x0 + x1) / 2, p.pos.x - rx, p.pos.x + rx),
+      y: clamp((y0 + y1) / 2, p.pos.y - ry, p.pos.y + ry),
+      ax: view.w / 2,
+      ay: (FRAME_TOP + view.h - FRAME_PAD) / 2,
+      zoom,
+    }
   }
 
   /**
@@ -949,23 +1012,25 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     const vy = push(s.y, view.h)
     if (vx === 0 && vy === 0) return
     const before = { ...this.cam }
-    this.cam.x += vx * PAN_SPEED * realDt
-    this.cam.y += vy * PAN_SPEED * realDt
+    this.cam.x += (vx * PAN_SPEED * realDt) / this.zoom
+    this.cam.y += (vy * PAN_SPEED * realDt) / this.zoom
     this.clampCamera()
     if (this.cam.x !== before.x || this.cam.y !== before.y) this.extendStroke(this.toWorld(s))
   }
 
   private clampCamera(): void {
     const L = this.level
-    this.cam.x = L.width <= view.w ? (L.width - view.w) / 2 : clamp(this.cam.x, 0, L.width - view.w)
-    if (L.height <= view.h) {
+    const vw = this.viewW
+    const vh = this.viewH
+    this.cam.x = L.width <= vw ? (L.width - vw) / 2 : clamp(this.cam.x, 0, L.width - vw)
+    if (L.height <= vh) {
       // Taller screen than the level (a phone held upright): put the main ground just below
       // the middle of the screen, where drawing is comfortable, without hiding the level's top.
       // The ground is drawn continuing below the level.
-      const desired = L.height - GROUND_ROWS * TILE - view.h * TALL_GROUND_AT
-      this.cam.y = clamp(desired, L.height - view.h, 0)
+      const desired = L.height - GROUND_ROWS * TILE - vh * TALL_GROUND_AT
+      this.cam.y = clamp(desired, L.height - vh, 0)
     } else {
-      this.cam.y = clamp(this.cam.y, 0, L.height - view.h)
+      this.cam.y = clamp(this.cam.y, 0, L.height - vh)
     }
   }
 
@@ -974,9 +1039,13 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
   render(g: CanvasRenderingContext2D): void {
     const { w, h } = view
     drawSky(g, this.def.theme, this.cam.x, this.cam.y)
+    const vw = this.viewW
+    const vh = this.viewH
     g.save()
-    g.translate(-this.cam.x + this.fx.shakeX, -this.cam.y + this.fx.shakeY)
-    drawTerrain(g, this.level, this.cam.x, this.cam.y, this.cam.x + w, this.cam.y + h, this.time)
+    g.translate(this.fx.shakeX, this.fx.shakeY)
+    g.scale(this.zoom, this.zoom)
+    g.translate(-this.cam.x, -this.cam.y)
+    drawTerrain(g, this.level, this.cam.x, this.cam.y, this.cam.x + vw, this.cam.y + vh, this.time)
     if (this.level.gate) drawGate(g, this.level.gate, !this.gateOpen)
     for (const c of this.coins) {
       const bob = c.placed && !c.attract ? Math.sin(this.time * 3 + c.pos.x * 0.05) * 3 : 0
@@ -984,7 +1053,7 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     }
     this.fx.renderBack(g)
     const left = this.cam.x - 120
-    const right = this.cam.x + w + 120
+    const right = this.cam.x + vw + 120
     for (const e of this.enemies) if (e.pos.x > left && e.pos.x < right) e.render(g, this.time)
     for (const c of this.cuts) {
       c.e.draw(g, this.time)

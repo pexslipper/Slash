@@ -1,6 +1,5 @@
 import { type Vec, add, clamp, dist, fromAngle, mul, norm, rand, sub, vec } from '../core/math.ts'
 import { hitstop } from '../core/time.ts'
-import { view } from '../core/view.ts'
 import type { Fx } from '../render/fx.ts'
 import { INK, RED, WHITE, circle, line, polyline, ring } from '../render/ink.ts'
 import type { Enemy } from './enemies/base.ts'
@@ -46,6 +45,9 @@ export interface SpecialCtx {
   readonly player: Player
   readonly fx: Fx
   readonly cam: Vec
+  /** Visible world area in units (larger than the screen while the camera is zoomed out). */
+  readonly viewW: number
+  readonly viewH: number
   readonly stats: PlayerStats
   /** Damage that bypasses guards, with flinch, splatter and kill handling. */
   damageEnemy(e: Enemy, amount: number, dir: Vec): void
@@ -105,8 +107,11 @@ export class Specials {
   private slashes: ScreenSlash[] = []
   private starT = 0
 
-  /** Fires the special at the end of the cut. Still Cut's release is handled by the world. */
-  cast(ctx: SpecialCtx, m: ShapeMatch, mult: number): void {
+  /**
+   * Fires the special at the end of the cut. Still Cut's release is handled by the world.
+   * Returns the enemies it left hanging in the air, ready for a follow-up cut.
+   */
+  cast(ctx: SpecialCtx, m: ShapeMatch, mult: number): Enemy[] {
     const move = moveOf(m.shape)
     const def = SPECIALS[move]
     ctx.fx.text(add(m.center, vec(0, -m.radius - 20)), `${def.kanji} ${def.name}`, RED, 30)
@@ -116,7 +121,8 @@ export class Specials {
         // Everything inside is lifted and held in the air while the sphere cuts it to ribbons.
         const r = m.radius * 1.1
         this.voids.push({ center: m.center, radius: r, life: VOID_TIME, max: VOID_TIME, spawnT: 0 })
-        for (const e of alive.filter((e) => overlapsCircle(e, m.center, r))) {
+        const held = alive.filter((e) => overlapsCircle(e, m.center, r))
+        for (const e of held) {
           e.suspend(VOID_TIME + 0.35)
           for (let i = 0; i < VOID_HITS; i++) {
             this.strikes.push({
@@ -130,27 +136,28 @@ export class Specials {
         }
         ctx.fx.flashScreen(INK, 0.12, 0.35)
         ctx.fx.shake(6)
-        break
+        return held
       }
       case 'rising': {
         // No damage: throws everyone in the shape's box into the air, bunched together and
         // hanging at the top, as the setup for a Void Cut or a Still Cut.
         this.sweeps.push({ box: m.box, life: 0.4, max: 0.4 })
         const midX = (m.box.x0 + m.box.x1) / 2
-        for (const e of alive.filter((e) => overlapsBox(e, m.box))) {
+        const thrown = alive.filter((e) => overlapsBox(e, m.box))
+        for (const e of thrown) {
           e.launch(-LAUNCH_SPEED, LAUNCH_HOVER, midX)
           ctx.fx.smoke({ x: e.pos.x, y: e.pos.y + e.hh }, 4, 14)
           this.slashes.push({ a: add(e.pos, vec(rand(-8, 8), 60)), b: add(e.pos, vec(rand(-8, 8), -90)), color: WHITE, life: 0.25, max: 0.25 })
         }
         ctx.fx.shake(8)
         hitstop(0.06)
-        break
+        return thrown
       }
       case 'still':
-        break
+        return []
       case 'thousand': {
         const visible = alive.filter(
-          (e) => e.pos.x > ctx.cam.x - 40 && e.pos.x < ctx.cam.x + view.w + 40 && e.pos.y > ctx.cam.y - 40 && e.pos.y < ctx.cam.y + view.h + 40,
+          (e) => e.pos.x > ctx.cam.x - 40 && e.pos.x < ctx.cam.x + ctx.viewW + 40 && e.pos.y > ctx.cam.y - 40 && e.pos.y < ctx.cam.y + ctx.viewH + 40,
         )
         const dmg = ctx.stats.damage * mult
         for (const e of visible) {
@@ -162,7 +169,7 @@ export class Specials {
         ctx.fx.flashScreen(INK, 0.3, 0.85)
         ctx.fx.shake(10)
         hitstop(0.15)
-        break
+        return []
       }
     }
   }
@@ -208,7 +215,7 @@ export class Specials {
     if (this.starT > 0) {
       this.starT -= dt
       for (let i = 0; i < 2; i++) {
-        const c = { x: ctx.cam.x + rand(0, view.w), y: ctx.cam.y + rand(0, view.h) }
+        const c = { x: ctx.cam.x + rand(0, ctx.viewW), y: ctx.cam.y + rand(0, ctx.viewH) }
         const d = norm(fromAngle(rand(0, Math.PI * 2)))
         const len = rand(200, 500)
         this.slashes.push({ a: sub(c, mul(d, len)), b: add(c, mul(d, len)), color: Math.random() < 0.5 ? WHITE : INK, life: 0.2, max: 0.2 })
