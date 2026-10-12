@@ -83,8 +83,8 @@ interface ScreenSlash extends Visual {
 
 const VOID_TIME = 0.95
 const VOID_HITS = 6
-/** Void Cut damage per hit, as a fraction of base cut damage (no combo bonus): it is mostly a control move. */
-const VOID_DAMAGE = 0.45
+/** Void Cut damage per hit, as a fraction of base cut damage (no combo bonus). */
+const VOID_DAMAGE = 0.75
 const LAUNCH_SPEED = 900
 /** Rising Cut: how long launched enemies hang at the top, waiting for a follow-up. */
 const LAUNCH_HOVER = 1.5

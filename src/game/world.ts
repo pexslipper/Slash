@@ -81,6 +81,10 @@ const CUT_WAIT = 0.14
 const HALF_LIFE = 1.1
 /** Pause between the end of a Still Cut and the moment its stored cuts land. */
 const STILL_DELAY = 0.35
+/** Each further Still Cut pass on the same foe stores this much less damage (1.0, 0.9, 0.8, ...). */
+const STILL_FALLOFF = 0.1
+/** The stored damage per pass never drops below this fraction. */
+const STILL_MIN = 0.2
 /** While drawing, the camera pans when the cursor is within this fraction of the screen edge. */
 const PAN_EDGE = 0.16
 /** Pan speed (world units per real second) with the cursor right at the edge. */
@@ -631,7 +635,9 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
       this.stilled.set(e, s)
       e.freeze()
     }
-    s.damage += this.stats.damage * comboMult(this.combo) * (h.crit ? this.stats.critMult : 1)
+    // Diminishing returns: the nth pass through the same foe stores less than the one before.
+    const falloff = Math.max(STILL_MIN, 1 - STILL_FALLOFF * s.marks.length)
+    s.damage += this.stats.damage * comboMult(this.combo) * (h.crit ? this.stats.critMult : 1) * falloff
     s.dir = dir
     s.marks.push({ a: sub(h.point, mul(dir, 34)), b: add(h.point, mul(dir, 34)) })
     this.combo++
