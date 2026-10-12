@@ -1,3 +1,4 @@
+import { sfx } from '../../core/audio.ts'
 import type { Vec } from '../../core/math.ts'
 import { INK, RED, circle, limb, ring, shape } from '../../render/ink.ts'
 import { type Difficulty, Enemy, type WorldCtx } from './base.ts'
@@ -68,6 +69,7 @@ export class Oni extends Enemy {
           ctx.fx.smoke(at, 10, 22)
           ctx.fx.splatter(at, { x: this.facing, y: -1 }, INK, 14, 300, 4)
           ctx.fx.shake(10)
+          sfx('thud')
         }
         break
       case 'slam':

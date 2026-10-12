@@ -1,3 +1,4 @@
+import { sfx } from '../core/audio.ts'
 import { type Vec, add, clamp, dist, fromAngle, mul, norm, rand, sub, vec } from '../core/math.ts'
 import { hitstop } from '../core/time.ts'
 import type { Fx } from '../render/fx.ts'
@@ -12,16 +13,20 @@ export type MoveKind = 'void' | 'rising' | 'still' | 'thousand'
 export interface SpecialDef {
   name: string
   kanji: string
-  /** Spirit cost (the meter runs 0 to 100). 0 = free. */
+  /** Spirit cost (the meter runs 0 to 100), paid when the cut is released. */
   cost: number
   /** False when the dash along the drawn shape should not hurt anything (a pure setup move). */
   pathCuts: boolean
 }
 
+/**
+ * Every special costs spirit, earned by ordinary cuts (and parries), so a launch-and-finish
+ * combo has to be built up to rather than drawn every time.
+ */
 export const SPECIALS: Record<MoveKind, SpecialDef> = {
-  void: { name: 'Void Cut', kanji: '円', cost: 0, pathCuts: true },
-  rising: { name: 'Rising Cut', kanji: '昇', cost: 0, pathCuts: false },
-  still: { name: 'Still Cut', kanji: '静', cost: 0, pathCuts: true },
+  void: { name: 'Void Cut', kanji: '円', cost: 30, pathCuts: true },
+  rising: { name: 'Rising Cut', kanji: '昇', cost: 20, pathCuts: false },
+  still: { name: 'Still Cut', kanji: '静', cost: 40, pathCuts: true },
   thousand: { name: 'Thousand Cuts', kanji: '星', cost: 100, pathCuts: true },
 }
 
@@ -89,6 +94,11 @@ const LAUNCH_SPEED = 900
 /** Rising Cut: how long launched enemies hang at the top, waiting for a follow-up. */
 const LAUNCH_HOVER = 1.5
 const STAR_TIME = 0.75
+/**
+ * Thousand Cuts reaches every enemy this far from the star's center (world units, the same on
+ * every screen; about what a desktop screen shows).
+ */
+export const STAR_RANGE = 640
 
 const overlapsCircle = (e: Enemy, c: Vec, r: number): boolean => {
   const nx = clamp(c.x, e.pos.x - e.hw, e.pos.x + e.hw)
@@ -98,6 +108,10 @@ const overlapsCircle = (e: Enemy, c: Vec, r: number): boolean => {
 
 const overlapsBox = (e: Enemy, b: Bounds): boolean =>
   e.pos.x + e.hw >= b.x0 && e.pos.x - e.hw <= b.x1 && e.pos.y + e.hh >= b.y0 && e.pos.y - e.hh <= b.y1
+
+/** The enemies a Thousand Cuts centered at `center` would strike. */
+export const starTargets = (enemies: Enemy[], center: Vec): Enemy[] =>
+  enemies.filter((e) => e.alive && overlapsCircle(e, center, STAR_RANGE))
 
 /** Shape-drawn special moves: scheduling, area effects and their visuals. */
 export class Specials {
@@ -109,7 +123,8 @@ export class Specials {
 
   /**
    * Fires the special at the end of the cut. Still Cut's release is handled by the world.
-   * Returns the enemies it left hanging in the air, ready for a follow-up cut.
+   * Returns the enemies it affects: the ones left hanging in the air (ready for a follow-up cut),
+   * or for Thousand Cuts everyone it is about to strike.
    */
   cast(ctx: SpecialCtx, m: ShapeMatch, mult: number): Enemy[] {
     const move = moveOf(m.shape)
@@ -136,6 +151,7 @@ export class Specials {
         }
         ctx.fx.flashScreen(INK, 0.12, 0.35)
         ctx.fx.shake(6)
+        sfx('void')
         return held
       }
       case 'rising': {
@@ -151,16 +167,15 @@ export class Specials {
         }
         ctx.fx.shake(8)
         hitstop(0.06)
+        sfx('rising')
         return thrown
       }
       case 'still':
         return []
       case 'thousand': {
-        const visible = alive.filter(
-          (e) => e.pos.x > ctx.cam.x - 40 && e.pos.x < ctx.cam.x + ctx.viewW + 40 && e.pos.y > ctx.cam.y - 40 && e.pos.y < ctx.cam.y + ctx.viewH + 40,
-        )
+        const targets = starTargets(alive, m.center)
         const dmg = ctx.stats.damage * mult
-        for (const e of visible) {
+        for (const e of targets) {
           for (let i = 0; i < 5; i++) {
             this.strikes.push({ e, wait: 0.15 + i * 0.12 + rand(0, 0.04), damage: dmg * 2, dir: norm(fromAngle(rand(0, Math.PI * 2))), kind: 'star' })
           }
@@ -169,7 +184,8 @@ export class Specials {
         ctx.fx.flashScreen(INK, 0.3, 0.85)
         ctx.fx.shake(10)
         hitstop(0.15)
-        return []
+        sfx('star')
+        return targets
       }
     }
   }
@@ -208,6 +224,7 @@ export class Specials {
         ctx.fx.ring(v.center, v.radius * 0.6, v.radius * 1.4, INK, 0.35)
         ctx.fx.splatter(v.center, vec(0, -1), INK, 22, 360, 5)
         ctx.fx.shake(10)
+        sfx('shatter')
       }
     }
     this.voids = this.voids.filter((v) => v.life > 0)

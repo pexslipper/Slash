@@ -271,3 +271,21 @@ export function recognize(points: Vec[]): ShapeMatch | null {
   if (pathLength(points) >= ZIG_MIN_LENGTH && turns.filter((a) => a >= ZIG_ANGLE).length >= ZIG_TURNS) return match('zigzag', 1)
   return null
 }
+
+/**
+ * Why a stroke was not read as any shape, as a short tip for the practice room. Uses the same
+ * thresholds as recognize().
+ */
+export function missReason(points: Vec[]): string {
+  if (points.length < 10) return 'Too short: draw the whole shape in one stroke'
+  const box = bounds(points)
+  const diagonal = Math.hypot(box.x1 - box.x0, box.y1 - box.y0)
+  if (diagonal < MIN_DIAGONAL) return 'Too small: draw it bigger'
+  const closed = dist(points[0], points[points.length - 1]) <= diagonal * MAX_GAP
+  if (!closed) {
+    const sharp = corners(points).filter((a) => a >= ZIG_ANGLE).length
+    if (sharp >= 2) return `A zigzag needs ${ZIG_TURNS} sharp turns (5 strokes); this one has ${sharp}`
+    return 'Close the shape: end the stroke where it started'
+  }
+  return 'Closed, but not a clear shape: make the corners sharp, or the circle round'
+}

@@ -294,7 +294,67 @@ h1 {
 
 .shop footer {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+/* Stage rank on the stage-clear screen. */
+.rank {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.grade {
+  flex: none;
+  width: 64px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+  font-family: 'Yuji Syuku', 'Yu Mincho', serif;
+  font-size: 44px;
+  line-height: 1;
+  border: 3px solid var(--ink);
+  transform: rotate(-3deg);
+}
+
+.grade.top {
+  background: var(--red);
+  border-color: var(--red);
+  color: var(--paper);
+  box-shadow: inset 0 0 0 3px var(--red), inset 0 0 0 5px var(--paper);
+}
+
+.rank-lines {
+  display: grid;
+  gap: 2px;
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+
+.rank-lines b {
+  color: var(--ink);
+}
+
+.rank-lines .new {
+  color: var(--red);
+  font-weight: 700;
+}
+
+/* Sound and vibration toggles on the title and pause screens. */
+.toggles {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.btn.small {
+  padding: 6px 12px;
+  font-size: 13px;
 }
 
 .over h1 {
@@ -375,4 +435,18 @@ h1 {
 .pause .confirm {
   margin: 0 0 6px;
   color: var(--ink-soft);
+}
+
+/* Back button in the practice room (top-right corner, where the pause button sits in play). */
+#back-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 8px 14px;
+  background: var(--paper);
+  box-shadow: 3px 4px 0 rgba(22, 18, 15, 0.18);
+}
+
+#back-btn[hidden] {
+  display: none;
 }

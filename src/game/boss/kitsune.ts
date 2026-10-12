@@ -1,3 +1,4 @@
+import { sfx } from '../../core/audio.ts'
 import { type Vec, add, copy, dist, fromAngle, lerpVec, mul, norm, rand, segAABB, sub } from '../../core/math.ts'
 import { FONT_BRUSH, INK, RED, WHITE, circle, limb, polyline, ring, shape, text } from '../../render/ink.ts'
 import { type Difficulty, Enemy, type HitResult, type StrokeHit, type WorldCtx } from '../enemies/base.ts'
@@ -93,6 +94,7 @@ export class Kitsune extends Enemy {
       this.splitIllusions(ctx)
       ctx.fx.text({ x: this.pos.x, y: this.pos.y - 70 }, '分身 She splits', RED, 26)
       ctx.fx.flashScreen(INK, 0.25, 0.5)
+      sfx('gong')
     }
 
     this.timer -= dt
@@ -126,6 +128,7 @@ export class Kitsune extends Enemy {
           this.state = 'dash'
           this.kinematic = true
           this.progress = 0
+          sfx('dash', 1.3)
         }
         break
       case 'dash': {

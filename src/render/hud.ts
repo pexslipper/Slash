@@ -49,7 +49,7 @@ function fitLines(str: string, width: number): string[] {
 }
 
 /** Word-wraps text to a maximum width at the given (body-font) size. */
-function wrap(g: Ctx, str: string, size: number, maxW: number): string[] {
+export function wrap(g: Ctx, str: string, size: number, maxW: number): string[] {
   g.save()
   g.font = `700 ${size}px ${FONT_TEXT}`
   const width = (t: string): number => (g.measureText(t) as TextMetrics | undefined)?.width ?? t.length * size * 0.5
@@ -127,6 +127,8 @@ export function renderHud(g: Ctx, w: World): void {
     const cy = narrow ? 165 : 74
     text(g, `${w.combo}`, vw / 2 - 8, cy, 40, RED, { font: FONT_BRUSH, align: 'right', alpha: a })
     text(g, `斬  ×${comboMult(w.combo)}`, vw / 2, cy + 2, 20, INK, { font: FONT_BRUSH, align: 'left', alpha: a })
+    // Carried over from the last cut by keeping its targets in the air.
+    if (w.chained) text(g, '連  chain', vw / 2, cy + 30, 15, RED, { font: FONT_BRUSH, alpha: a })
   }
 
   if (w.banner) {
@@ -154,7 +156,7 @@ export function renderHud(g: Ctx, w: World): void {
     const learned = MOVE_ORDER.some((k) => s.arts[k])
     hints.push({
       str: learned
-        ? 'Draw a learned shape to cast its special  ·  triangle/rectangle 昇, circle 円, zigzag 静, star 星'
+        ? 'Draw a learned shape to cast its special (each costs 気 spirit)  ·  triangle/rectangle 昇, circle 円, zigzag 静, star 星'
         : 'Shape specials are locked  ·  Learn them with mon at the Dojo between stages (技 Arts)',
       color: RED,
     })

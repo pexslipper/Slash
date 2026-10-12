@@ -1,4 +1,5 @@
-import { type Vec, add, clamp, copy, dist, distToSeg, len, lerp, lerpVec, mul, norm, rand, segSeg, sub, vec } from '../core/math.ts'
+import { sfx } from '../core/audio.ts'
+import { type Vec, add, clamp, copy, dist, distToSeg, dot, len, lerp, lerpVec, mul, norm, rand, segSeg, sub, vec } from '../core/math.ts'
 import type { InputHandler } from '../core/input.ts'
 import { clock, hitstop } from '../core/time.ts'
 import { DEBUG, view } from '../core/view.ts'
@@ -11,8 +12,9 @@ import type { Difficulty, Enemy, HitResult, ProjectileSpec, StrokeHit, WorldCtx 
 import { createEnemy } from './enemies/index.ts'
 import { type Body, GRAVITY, Level, type LevelDef, ONEWAY, SOLID, TILE, moveBody, unstick } from './level.ts'
 import { getLevel } from './levels.ts'
-import { type ShapeMatch, recognize } from './shapes.ts'
-import { type SpecialCtx, Specials, moveOf, specialFor } from './specials.ts'
+import { type Rank, computeRank, duelPar, levelPar } from './rank.ts'
+import { type Bounds, type ShapeMatch, recognize } from './shapes.ts'
+import { type SpecialCtx, Specials, moveOf, specialFor, starTargets } from './specials.ts'
 import { Player } from './player.ts'
 import type { PlayerStats } from './stats.ts'
 import { Stroke } from './stroke.ts'
@@ -72,6 +74,8 @@ export interface StageResult {
   kills: number
   bestMult: number
   hp: number
+  /** Set when the stage was cleared. */
+  rank: Rank | null
 }
 
 /** Pointer travel (screen units) before a press turns into drawing instead of a click. */
@@ -104,8 +108,34 @@ const MIN_ZOOM = 0.65
 /** Screen-space margins kept around the framed group; the top one clears the HUD meters. */
 const FRAME_PAD = 60
 const FRAME_TOP = 130
-/** Longest the camera keeps framing one special's victims (real seconds). */
+/** Longest the camera keeps framing one special's victims (game seconds). */
 const FRAME_TIME = 4
+/** Thousand Cuts: the camera may zoom out this far to show every target, for this long (game seconds). */
+const STAR_MIN_ZOOM = 0.45
+const STAR_FRAME_TIME = 1.4
+/**
+ * Enemies more than this far from the samurai (horizontally) wait, frozen, until it comes closer;
+ * bosses always act. A fixed distance, so phones and big screens wake enemies at the same point.
+ */
+const WAKE_RANGE = 900
+
+interface Extent {
+  pos: Vec
+  hw: number
+  hh: number
+}
+
+/** Box around a group of bodies. */
+function boundsOf(bodies: Extent[]): Bounds {
+  const b = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity }
+  for (const e of bodies) {
+    b.x0 = Math.min(b.x0, e.pos.x - e.hw)
+    b.x1 = Math.max(b.x1, e.pos.x + e.hw)
+    b.y0 = Math.min(b.y0, e.pos.y - e.hh)
+    b.y1 = Math.max(b.y1, e.pos.y + e.hh)
+  }
+  return b
+}
 
 export class World implements WorldCtx, SpecialCtx, InputHandler {
   readonly level: Level
@@ -132,6 +162,13 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
   zoom = 1
   /** Spirit (0..100): earned by landing hits, spent on shape specials. */
   spirit: number
+  /** The current cut carried on the last one's combo, because its targets were still in the air. */
+  chained = false
+  /** For the stage rank: real seconds played, damage taken, the par time, and the rank once cleared. */
+  elapsed = 0
+  damageTaken = 0
+  readonly par: number
+  rank: Rank | null = null
   /** Shape the current drawing would cast, refreshed while drawing. */
   preview: ShapeMatch | null = null
   specialsCast = 0
@@ -162,9 +199,14 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
   private endTimer = 0
   private ended = false
   private clickMark: { p: Vec; life: number } | null = null
-  /** Enemies a special left in the air, kept in frame until they land (or FRAME_TIME runs out). */
+  /**
+   * Enemies a special left in the air: the camera keeps them in frame and a new cut keeps the
+   * combo going, until they land (or FRAME_TIME runs out).
+   */
   private framed: Enemy[] = []
   private frameT = 0
+  /** Thousand Cuts: the area of its targets, kept in frame while the cuts land. */
+  private starFrame: { box: Bounds; t: number } | null = null
   private readonly onEnd: (r: StageResult) => void
 
   constructor(
@@ -188,10 +230,13 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     this.player = new Player({ x: start.x, y: start.y - 22 }, hp)
     for (const s of this.level.spawns) this.enemies.push(createEnemy(s.kind, { x: s.x, y: s.y }, this.diff))
     for (const c of this.level.coins) this.coins.push(this.makeCoin(c, vec(), 2, true))
+    const boss = this.boss
+    this.par = boss ? duelPar(boss.maxHp, stats.damage) : levelPar(this.level.width, this.foesLeft)
     clock.scale = 1
     clock.hitstop = 0
     this.updateCamera(1, true)
     this.showBanner(this.def.kanji, `${this.def.name}${info.cycle > 0 ? `  ·  Trial ${info.cycle + 1}` : ''}`, 2.2)
+    sfx('drum')
   }
 
   /** Visible world width and height in units at the current zoom. */
@@ -233,6 +278,7 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     if (p.dead || this.outcome) return
     if (!ignoreIframes && p.invulnerable) return
     p.hp -= amount
+    this.damageTaken += amount
     p.iframes = Math.max(p.iframes, 0.8)
     p.hurtFlash = 0.25
     if (p.action === 'free') {
@@ -245,6 +291,7 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     this.fx.shake(9)
     hitstop(0.05)
     if (p.hp <= 0) this.die()
+    else sfx('hurt')
   }
 
   executePlayer(from: Vec): void {
@@ -263,6 +310,8 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
 
   spawnProjectile(spec: ProjectileSpec): void {
     this.projectiles.push({ ...spec, pos: copy(spec.pos), life: 5 })
+    // Arrows arc (a bowstring twang); thrown blades fly straight (a whistle).
+    sfx(spec.kind === 'arrow' && spec.gravity > 0 ? 'arrow' : 'shuriken')
   }
 
   canSee(a: Vec, b: Vec): boolean {
@@ -326,11 +375,15 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
       const below = this.level.tileAt(p.pos.x, p.feetY + 2)
       if (rise < -60 && below === ONEWAY) p.dropTimer = 0.3
       if (rise < 45) p.runTarget = t.x
-      else p.jumpTo(t)
+      else {
+        p.jumpTo(t)
+        sfx('jump')
+      }
     } else if (p.airJumps > 0) {
       p.airJumps--
       p.jumpTo(t)
       this.fx.smoke({ x: p.pos.x, y: p.feetY }, 4, 10)
+      sfx('jump', 1.2)
     }
   }
 
@@ -349,6 +402,7 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     p.action = 'drawing'
     p.runTarget = null
     this.drawTime = 0
+    sfx('focus')
     for (const e of this.enemies) e.onDrawStart(this)
   }
 
@@ -383,7 +437,16 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     }
     const start = stroke.points[0]
     const blocked = this.level.segmentBlocked(p.pos, start)
-    this.combo = 0
+    // A cut begun while the last special's victims are still in the air carries the combo on.
+    this.chained = this.combo > 0 && this.framed.length > 0
+    if (this.chained) {
+      this.comboShow = 1.4
+      this.fx.text(add(p.pos, vec(0, -56)), `連 ${this.combo}`, RED, 24)
+      sfx('chain')
+    } else {
+      this.combo = 0
+    }
+    sfx('swish')
     this.strokeKills = 0
     this.finisherQueued = false
     clock.scale = 1
@@ -422,6 +485,11 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     this.pendingSpecial = m
   }
 
+  /** The shape's special is learned and affordable right now. */
+  private canCast(m: ShapeMatch): boolean {
+    return this.stats.arts[moveOf(m.shape)] && this.spirit >= specialFor(m.shape).cost
+  }
+
   private gainSpirit(amount: number): void {
     const was = this.spirit
     this.spirit = Math.min(100, this.spirit + amount)
@@ -435,6 +503,8 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     if (!killed) e.flinch(dir)
     this.combo++
     this.comboShow = 1.4
+    this.bestMult = Math.max(this.bestMult, comboMult(this.combo))
+    sfx(killed ? 'kill' : 'cut', 1 + 0.06 * comboTier(this.combo))
     this.fx.splatter(e.pos, dir, INK, 10)
     this.fx.splatter(e.pos, dir, RED, 6, 300, 3)
     this.fx.text(add(e.pos, vec(0, -e.hh - 16)), String(Math.round(amount)), RED, 20)
@@ -508,6 +578,7 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
       this.fx.flashScreen(INK, 0.18, 0.75)
       this.fx.shake(14)
       hitstop(0.25)
+      sfx('parry')
     }
 
     const hits: { e: Enemy; h: StrokeHit }[] = []
@@ -559,6 +630,8 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
         this.fx.shake(5)
       }
       if (tier > tierBefore) this.fx.text(add(this.player.pos, vec(0, -56)), `×${COMBO_MULTS[tier]}`, RED, 26)
+      // The blade rings higher as the combo climbs.
+      sfx(r.killed ? 'kill' : h.crit ? 'crit' : 'cut', 1 + 0.06 * tierBefore)
       hitstop(r.killed ? 0.06 : 0.035)
       if (r.killed) this.onKill(e, COMBO_MULTS[tierBefore], h.point, dir)
     } else if (r.outcome === 'blocked') {
@@ -567,6 +640,7 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
       this.fx.text(add(h.point, vec(0, -30)), 'Guarded', INK, 20)
       this.fx.shake(7)
       hitstop(0.08)
+      sfx('block')
     }
     return r
   }
@@ -585,6 +659,7 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     if (e.isBoss) {
       this.fx.flashScreen(WHITE, 0.6, 0.8)
       hitstop(0.35)
+      sfx('boom')
     }
   }
 
@@ -608,10 +683,14 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
       this.fx.text(add(p.pos, vec(0, -60)), `+${Math.round(heal)}`, RED, 22)
     }
     if (cut && this.pendingSpecial && !p.dead) {
-      const lifted = this.specials.cast(this, this.pendingSpecial, comboMult(this.combo))
-      if (lifted.length > 0) {
-        this.framed = lifted
-        this.frameT = FRAME_TIME
+      const m = this.pendingSpecial
+      const affected = this.specials.cast(this, m, comboMult(this.combo))
+      if (affected.length > 0) {
+        if (moveOf(m.shape) === 'thousand') this.starFrame = { box: boundsOf(affected), t: STAR_FRAME_TIME }
+        else {
+          this.framed = affected
+          this.frameT = FRAME_TIME
+        }
       }
       this.specialsCast++
     }
@@ -646,6 +725,7 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     this.gainSpirit(4)
     this.fx.burst(h.point, WHITE, 6, 160, 2)
     hitstop(0.02)
+    sfx('mark')
   }
 
   /** The stored cuts land all at once. Anything frozen in mid-air dies outright. */
@@ -655,6 +735,7 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     this.fx.flashScreen(WHITE, 0.15, 0.6)
     this.fx.shake(12)
     hitstop(0.12)
+    sfx('still')
     for (const [e, s] of this.stilled) {
       e.unfreeze()
       if (!e.alive) continue
@@ -682,6 +763,7 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     this.fx.ring(p.pos, 8, s.finisherRadius * 0.8, RED, 0.3)
     this.fx.shake(8)
     hitstop(0.06)
+    sfx('swish', 1.3)
     const damage = s.damage * 1.5 * comboMult(this.combo)
     for (const e of [...this.enemies]) {
       if (!e.alive || dist(e.pos, p.pos) > s.finisherRadius + Math.max(e.hw, e.hh)) continue
@@ -694,6 +776,7 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
   // ---- Simulation ----
 
   update(realDt: number): void {
+    if (!this.outcome) this.elapsed += realDt
     this.fx.updateReal(realDt)
     if (this.banner) {
       this.banner.t -= realDt
@@ -719,13 +802,20 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     clock.scale = lerp(clock.scale, target, 1 - Math.exp(-realDt * 14))
     const dt = realDt * clock.scale
     this.time += dt
+    this.frameT -= dt
+    this.framed = this.frameT > 0 ? this.framed.filter((e) => e.alive && e.airborne) : []
+    if (this.starFrame && (this.starFrame.t -= dt) <= 0) this.starFrame = null
 
     if (p.action === 'drawing') {
       this.drawTime += realDt
       this.previewT -= realDt
       if (this.previewT <= 0 && this.stroke) {
         this.previewT = 0.1
+        const was = this.preview
         this.preview = recognize(this.drawn)
+        // A soft chime the moment the drawing reads as a special that can be cast.
+        const now = this.preview
+        if (now && this.canCast(now) && (!was || moveOf(was.shape) !== moveOf(now.shape))) sfx('ready')
       }
       if (this.drawTime >= this.stats.focusTime) this.release()
     }
@@ -735,13 +825,12 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     p.tick(dt)
     this.checkHazards()
 
-    const cx = this.cam.x + this.viewW / 2
     this.specials.update(dt, this)
     if (this.stillRelease >= 0 && p.action !== 'slash' && p.action !== 'approach') {
       this.stillRelease -= dt
       if (this.stillRelease < 0) this.releaseStill()
     }
-    for (const e of this.enemies) if (e.isBoss || Math.abs(e.pos.x - cx) < this.viewW) e.update(dt, this)
+    for (const e of this.enemies) if (e.isBoss || Math.abs(e.pos.x - p.pos.x) < WAKE_RANGE) e.update(dt, this)
     this.checkContacts()
     this.updateProjectiles(dt)
     this.updateCoins(dt)
@@ -756,6 +845,7 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
       if (!this.gateOpen && this.foesLeft === 0) {
         this.gateOpen = true
         this.showBanner('開', 'Every foe has fallen. The gate is open.', 1.8)
+        sfx('gong')
       }
       if (!p.dead && p.pos.x > gate.x - 40) {
         if (this.gateOpen) this.clear()
@@ -780,13 +870,16 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
       bestMult: this.bestMult,
       hp: Math.max(0, this.player.hp),
       spirit: this.spirit,
+      rank: this.rank,
     })
   }
 
   private clear(): void {
     this.outcome = 'clear'
     this.endTimer = 2.2
-    this.showBanner('勝', 'The path is cut', 2.2)
+    this.rank = computeRank(this.elapsed, this.par, this.damageTaken, this.stats.maxHp, this.bestMult)
+    this.showBanner('勝', `The path is cut  ·  Rank ${this.rank.grade}`, 2.2)
+    sfx('clear')
     if (this.player.action === 'drawing') this.cancelStroke()
     for (const c of this.coins) c.attract = true
     this.projectiles = []
@@ -809,6 +902,7 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     this.fx.splatter(p.pos, vec(0, -1), INK, 30, 380, 5)
     this.fx.shake(18)
     this.showBanner('敗', 'Your blade falls silent', 2.2)
+    sfx('death')
   }
 
   private showBanner(title: string, sub: string, seconds: number): void {
@@ -908,6 +1002,7 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
         this.runGold += c.value
         c.life = -1
         this.fx.burst(c.pos, '#b8862b', 4, 110, 2)
+        sfx('coin')
       }
     }
     this.coins = this.coins.filter((c) => c.life > 0 && c.pos.y < this.level.height + 200)
@@ -953,8 +1048,6 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
 
   private updateCamera(realDt: number, snap = false): void {
     const p = this.player
-    if ((this.frameT -= realDt) <= 0) this.framed = []
-    this.framed = this.framed.filter((e) => e.alive && e.airborne)
     // While drawing, zoom and view hold still (bar edge panning) so the path stays under the finger.
     if (p.action === 'drawing' && !snap) {
       this.panWhileDrawing(realDt)
@@ -970,24 +1063,26 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
     this.clampCamera()
   }
 
-  /** Centre and zoom that fit the samurai and the framed enemies inside the screen margins. */
+  /**
+   * Centre and zoom that fit the samurai and the framed enemies (or a Thousand Cuts' targets)
+   * inside the screen margins.
+   */
   private frameTarget(): { x: number; y: number; ax: number; ay: number; zoom: number } | null {
-    if (this.framed.length === 0) return null
+    const star = this.starFrame
+    if (!star && this.framed.length === 0) return null
     const p = this.player
-    let x0 = p.pos.x - p.hw
-    let x1 = p.pos.x + p.hw
-    let y0 = p.pos.y - p.hh
-    let y1 = p.pos.y + p.hh
-    for (const e of this.framed) {
-      x0 = Math.min(x0, e.pos.x - e.hw)
-      x1 = Math.max(x1, e.pos.x + e.hw)
-      y0 = Math.min(y0, e.pos.y - e.hh)
-      y1 = Math.max(y1, e.pos.y + e.hh)
+    const b = boundsOf([p, ...this.framed])
+    if (star) {
+      b.x0 = Math.min(b.x0, star.box.x0)
+      b.x1 = Math.max(b.x1, star.box.x1)
+      b.y0 = Math.min(b.y0, star.box.y0)
+      b.y1 = Math.max(b.y1, star.box.y1)
     }
+    const { x0, y0, x1, y1 } = b
     const fitW = (view.w - FRAME_PAD * 2) / (x1 - x0)
     // On screens taller than the level the whole height is always in view (see clampCamera).
     const fitH = this.level.height <= view.h ? 1 : (view.h - FRAME_TOP - FRAME_PAD) / (y1 - y0)
-    const zoom = clamp(Math.min(fitW, fitH), MIN_ZOOM, 1)
+    const zoom = clamp(Math.min(fitW, fitH), star ? STAR_MIN_ZOOM : MIN_ZOOM, 1)
     // Too spread out to fit even at the widest zoom: favour keeping the samurai in view.
     const rx = Math.max(0, (view.w / 2 - FRAME_PAD) / zoom - p.hw)
     const ry = Math.max(0, ((view.h - FRAME_TOP - FRAME_PAD) / 2) / zoom - p.hh)
@@ -1092,8 +1187,29 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
       g.fillStyle = vg
       g.fillRect(0, 0, w, h)
     }
+    this.renderIncoming(g)
     this.fx.renderFlash(g)
     renderHud(g, this)
+  }
+
+  /**
+   * A red chevron at the screen edge for every arrow or blade flying in from off screen, since
+   * enemies can wake up and shoot before they come into view (especially on a narrow phone).
+   */
+  private renderIncoming(g: CanvasRenderingContext2D): void {
+    const p = this.player
+    const m = 18
+    const alpha = 0.65 + 0.3 * Math.sin(this.time * 18)
+    for (const pr of this.projectiles) {
+      const s = mul(sub(pr.pos, this.cam), this.zoom)
+      if (s.x >= 0 && s.x <= view.w && s.y >= 0 && s.y <= view.h) continue
+      if (dot(pr.vel, sub(p.pos, pr.pos)) <= 0) continue
+      const at = { x: clamp(s.x, m, view.w - m), y: clamp(s.y, m, view.h - m) }
+      const a = Math.atan2(pr.vel.y, pr.vel.x)
+      const tip = add(at, { x: Math.cos(a) * 8, y: Math.sin(a) * 8 })
+      const wing = (side: number): Vec => add(at, { x: Math.cos(a + side * 2.4) * 10, y: Math.sin(a + side * 2.4) * 10 })
+      polyline(g, [wing(1), tip, wing(-1)], 3.5, RED, alpha)
+    }
   }
 
   private renderHalf(g: CanvasRenderingContext2D, h: Half): void {
@@ -1158,8 +1274,14 @@ export class World implements WorldCtx, SpecialCtx, InputHandler {
         // The shape is being read: say which special it will cast, and whether you can afford it.
         const def = specialFor(this.preview.shape)
         const learned = this.stats.arts[moveOf(this.preview.shape)]
-        const ready = learned && this.spirit >= def.cost
+        const ready = this.canCast(this.preview)
         ring(g, this.preview.center.x, this.preview.center.y, this.preview.radius, 1.5, ready ? RED : INK, 0.35, 0, Math.PI * 2)
+        if (ready && moveOf(this.preview.shape) === 'thousand') {
+          // Mark everyone the star will reach.
+          for (const e of starTargets(this.enemies, this.preview.center)) {
+            ring(g, e.pos.x, e.pos.y, Math.max(e.hw, e.hh) + 10, 2, RED, 0.45 + 0.25 * Math.sin(this.time * 20))
+          }
+        }
         text(g, `${def.kanji} ${def.name}`, s.last.x + 18, s.last.y - 22, 22, ready ? RED : INK_SOFT, { align: 'left', font: FONT_BRUSH })
         if (!learned) text(g, 'locked: learn it at the Dojo', s.last.x + 18, s.last.y, 13, INK_SOFT, { align: 'left' })
         else if (!ready) text(g, `needs ${def.cost} spirit`, s.last.x + 18, s.last.y, 13, INK_SOFT, { align: 'left' })

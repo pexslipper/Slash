@@ -1,3 +1,4 @@
+import { sfx } from '../../core/audio.ts'
 import type { Vec } from '../../core/math.ts'
 import { FONT_BRUSH, INK, RED, WHITE, circle, limb, line, polyline, ring, shape, text } from '../../render/ink.ts'
 import { type Difficulty, Enemy, type HitResult, type StrokeHit, type WorldCtx } from '../enemies/base.ts'
@@ -109,6 +110,7 @@ export class Warlord extends Enemy {
       ctx.fx.text({ x: this.pos.x, y: this.pos.y - this.hh - 60 }, '大返し GREAT PARRY', RED, 32)
       ctx.fx.flashScreen(WHITE, 0.3, 0.8)
       ctx.fx.shake(20)
+      sfx('gong')
     }
   }
 
@@ -123,6 +125,7 @@ export class Warlord extends Enemy {
       this.enraged = true
       ctx.fx.text({ x: this.pos.x, y: this.pos.y - this.hh - 50 }, '激怒 ENRAGED', RED, 30)
       ctx.fx.flashScreen(RED, 0.3, 0.4)
+      sfx('gong')
     }
 
     this.timer -= dt
@@ -149,6 +152,7 @@ export class Warlord extends Enemy {
           if (!p.invulnerable && ahead > -20 && ahead < SWEEP_REACH + 20 && Math.abs(p.pos.y - this.pos.y) < this.hh + 30) ctx.hurtPlayer(25, this.pos)
           ctx.fx.splatter({ x: this.pos.x + this.facing * 100, y: this.pos.y + 20 }, { x: this.facing, y: 0 }, INK, 16, 360, 5)
           ctx.fx.shake(8)
+          sfx('dash', 0.6)
         }
         break
       case 'sweep':
@@ -164,6 +168,7 @@ export class Warlord extends Enemy {
           this.waves.push({ x: this.pos.x, dir: 1, life: 2.2 }, { x: this.pos.x, dir: -1, life: 2.2 })
           ctx.fx.smoke({ x: this.pos.x, y: this.groundY }, 12, 24)
           ctx.fx.shake(12)
+          sfx('thud')
           this.recover(0.9)
         }
         break
@@ -175,6 +180,7 @@ export class Warlord extends Enemy {
           if (z && p.pos.x + p.hw > z.x0 && p.pos.x - p.hw < z.x1) ctx.executePlayer(this.pos)
           ctx.fx.flashScreen(WHITE, 0.35, 0.9)
           ctx.fx.shake(28)
+          sfx('boom')
           for (let i = 0; i < 6; i++) ctx.fx.smoke({ x: this.pos.x + this.facing * (60 + i * 80), y: this.groundY }, 4, 26)
           ctx.fx.splatter({ x: this.pos.x + this.facing * 80, y: this.groundY }, { x: this.facing, y: -1 }, INK, 30, 480, 6)
           this.recover(1.6)
@@ -203,6 +209,8 @@ export class Warlord extends Enemy {
     this.state = state
     this.windup = this.timer = windup
     this.vel.x = 0
+    // Wooden clappers: the one-shot is coming.
+    if (state === 'kaizan') sfx('warn')
   }
 
   private recover(t: number): void {

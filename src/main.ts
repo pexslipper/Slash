@@ -1,16 +1,30 @@
 import './style.css'
+import { canVibrate, initAudio, setSoundOn, setVibrationOn, sfx } from './core/audio.ts'
 import { Input } from './core/input.ts'
 import { lerp } from './core/math.ts'
 import { type SaveData, loadSave, writeSave } from './core/save.ts'
 import { DEBUG, updateView, view } from './core/view.ts'
 import { LEVELS, isBossStage } from './game/levels.ts'
 import { drawSamurai } from './game/player.ts'
+import { Practice } from './game/practice.ts'
+import { betterGrade } from './game/rank.ts'
 import { type PlayerStats, computeStats } from './game/stats.ts'
 import { UPGRADES, upgradeCost } from './game/upgrades.ts'
 import { World, type StageResult } from './game/world.ts'
 import { INK, RED, brushPath, text } from './render/ink.ts'
 import { drawGrain, drawSky } from './render/scenery.ts'
-import { hideOverlay, mountOverlay, setPauseButton, showGameOver, showPause, showShop, showTitle } from './ui/overlays.ts'
+import {
+  type SettingsOpts,
+  type ShopRank,
+  hideOverlay,
+  mountOverlay,
+  setBackButton,
+  setPauseButton,
+  showGameOver,
+  showPause,
+  showShop,
+  showTitle,
+} from './ui/overlays.ts'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
 const canvas = document.createElement('canvas')
@@ -30,11 +44,14 @@ window.addEventListener('resize', resize)
 resize()
 
 const input = new Input(canvas)
+initAudio()
 
 class Game {
   save: SaveData = loadSave()
   stats: PlayerStats = computeStats(this.save.upgrades)
   world: World | null = null
+  /** The shape practice room, while it is open. */
+  practiceRoom: Practice | null = null
   private running = false
   private runHp = 0
   private runSpirit = 0
@@ -43,6 +60,27 @@ class Game {
   /** HP and spirit the current stage started with, for "Restart stage". */
   private stageHp = 0
   private stageSpirit = 0
+
+  constructor() {
+    setSoundOn(this.save.settings.sound)
+    setVibrationOn(this.save.settings.vibration)
+  }
+
+  /** The sound and vibration toggles shown on the title and pause screens. */
+  private settings(): SettingsOpts {
+    const s = this.save.settings
+    return {
+      sound: s.sound,
+      vibration: canVibrate ? s.vibration : null,
+      onToggle: (key) => {
+        s[key] = !s[key]
+        setSoundOn(s.sound)
+        setVibrationOn(s.vibration)
+        writeSave(this.save)
+        return s[key]
+      },
+    }
+  }
 
   title(): void {
     this.world = null
@@ -54,6 +92,7 @@ class Game {
       gold: this.save.gold,
       best: this.save.bestStage,
       checkpoint: this.save.checkpoint,
+      settings: this.settings(),
       onStart: (stage) => this.startRun(stage),
       onShop: () => this.shop('Dojo', 'Done', () => this.title()),
     })
@@ -93,6 +132,7 @@ class Game {
     showPause({
       title: `${w.def.kanji} ${w.def.name}`,
       detail,
+      settings: this.settings(),
       onResume: () => this.resume(),
       onRestart: () => this.restartStage(),
       onMenu: () => this.quitToTitle(),
@@ -136,6 +176,13 @@ class Game {
     if (r.cleared) {
       this.save.bestStage = Math.max(this.save.bestStage, num)
       if (isBossStage(num)) this.save.checkpoint = Math.max(this.save.checkpoint, num + 1)
+      let rank: ShopRank | undefined
+      if (r.rank) {
+        const prev = this.save.ranks[num]
+        const newBest = betterGrade(r.rank.grade, prev)
+        if (newBest) this.save.ranks[num] = r.rank.grade
+        rank = { rank: r.rank, best: prev && !newBest ? prev : r.rank.grade, newBest }
+      }
       writeSave(this.save)
       // HP carries between stages, with a partial heal at the shrine.
       this.runHp = Math.min(this.stats.maxHp, r.hp + this.stats.maxHp * 0.35)
@@ -146,6 +193,7 @@ class Game {
         `Onward: ${next.kanji} ${next.name}`,
         () => this.startStage(num + 1),
         `+${r.gold} mon · ${r.kills} cuts · best combo ×${r.bestMult}`,
+        rank,
       )
     } else {
       writeSave(this.save)
@@ -162,8 +210,32 @@ class Game {
     }
   }
 
-  private shop(title: string, continueLabel: string, onContinue: () => void, summary?: string): void {
-    showShop({ save: this.save, title, summary, continueLabel, onContinue, onBuy: (id) => this.buy(id) })
+  private shop(title: string, continueLabel: string, onContinue: () => void, summary?: string, rank?: ShopRank): void {
+    showShop({
+      save: this.save,
+      title,
+      summary,
+      rank,
+      continueLabel,
+      onContinue,
+      onBuy: (id) => this.buy(id),
+      onPractice: () => this.practice(() => this.shop(title, continueLabel, onContinue, summary, rank)),
+    })
+  }
+
+  /** 稽古: the shape practice room, opened from the Dojo. Back (or Esc) returns there. */
+  private practice(onBack: () => void): void {
+    hideOverlay()
+    const leave = (): void => {
+      if (!this.practiceRoom) return
+      this.practiceRoom = null
+      input.handler = null
+      setBackButton(false)
+      onBack()
+    }
+    this.practiceRoom = new Practice(this.stats, leave)
+    input.handler = this.practiceRoom
+    setBackButton(true, leave)
   }
 
   private buy(id: string): void {
@@ -175,6 +247,7 @@ class Game {
     this.save.gold -= cost
     this.save.upgrades[id] = lvl + 1
     writeSave(this.save)
+    sfx('coin')
     const prevMax = this.stats.maxHp
     this.stats = computeStats(this.save.upgrades)
     this.runHp += this.stats.maxHp - prevMax
@@ -188,12 +261,14 @@ class Game {
 
   update(dt: number): void {
     this.time += dt
-    if (this.world && this.running && !this.paused) this.world.update(dt)
+    if (this.practiceRoom) this.practiceRoom.update(dt)
+    else if (this.world && this.running && !this.paused) this.world.update(dt)
   }
 
   render(): void {
     g.setTransform(view.dpr * view.scale, 0, 0, view.dpr * view.scale, 0, 0)
-    if (this.world) this.world.render(g)
+    if (this.practiceRoom) this.practiceRoom.render(g)
+    else if (this.world) this.world.render(g)
     else this.renderTitleBackdrop()
   }
 

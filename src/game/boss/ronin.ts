@@ -1,3 +1,4 @@
+import { sfx } from '../../core/audio.ts'
 import { type Vec, add, copy, dist, dot, lerpVec, mul, norm, rand, segAABB, sub } from '../../core/math.ts'
 import { FONT_BRUSH, INK, RED, WHITE, circle, limb, polyline, ring, shape, text } from '../../render/ink.ts'
 import { type Difficulty, Enemy, type HitResult, type StrokeHit, type WorldCtx } from '../enemies/base.ts'
@@ -110,6 +111,7 @@ export class Ronin extends Enemy {
           this.state = 'dash'
           this.kinematic = true
           this.progress = 0
+          sfx('dash')
         }
         break
       case 'dash': {
@@ -167,6 +169,7 @@ export class Ronin extends Enemy {
     this.timer = 1.2
     ctx.fx.text({ x: this.pos.x, y: this.pos.y - 60 }, title, RED, 24)
     ctx.fx.flashScreen(INK, 0.25, 0.5)
+    sfx('gong')
   }
 
   /** A dash line from `from` toward `to`, cut short by walls. */

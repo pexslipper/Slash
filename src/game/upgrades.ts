@@ -1,3 +1,4 @@
+import { SPECIALS } from './specials.ts'
 import type { PlayerStats } from './stats.ts'
 
 export type TreeId = 'arts' | 'blade' | 'flow' | 'core'
@@ -32,7 +33,7 @@ export const UPGRADES: UpgradeDef[] = [
     maxLevel: 1,
     baseCost: 80,
     growth: 1,
-    describe: () => 'Draw a triangle or rectangle: launches everyone inside into the air',
+    describe: () => `Draw a triangle or rectangle (${SPECIALS.rising.cost} spirit): launches everyone inside into the air`,
     apply: (s) => {
       s.arts.rising = true
     },
@@ -44,7 +45,7 @@ export const UPGRADES: UpgradeDef[] = [
     maxLevel: 1,
     baseCost: 150,
     growth: 1,
-    describe: () => 'Draw a circle: holds enemies inside in the air and cuts them',
+    describe: () => `Draw a circle (${SPECIALS.void.cost} spirit): holds enemies inside in the air and cuts them`,
     apply: (s) => {
       s.arts.void = true
     },
@@ -56,7 +57,7 @@ export const UPGRADES: UpgradeDef[] = [
     maxLevel: 1,
     baseCost: 250,
     growth: 1,
-    describe: () => 'Draw a 5-stroke zigzag: freezes what it cuts, then every cut lands; mid-air foes die',
+    describe: () => `Draw a 5-stroke zigzag (${SPECIALS.still.cost} spirit): freezes what it cuts, then every cut lands; mid-air foes die`,
     apply: (s) => {
       s.arts.still = true
     },
@@ -68,7 +69,7 @@ export const UPGRADES: UpgradeDef[] = [
     maxLevel: 1,
     baseCost: 400,
     growth: 1,
-    describe: () => 'Draw a star with a full Spirit meter: cuts every enemy on screen',
+    describe: () => `Draw a star (${SPECIALS.thousand.cost} spirit, a full meter): cuts every enemy near it, five times over`,
     apply: (s) => {
       s.arts.thousand = true
     },
